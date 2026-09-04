@@ -1,0 +1,111 @@
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/700.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+:root {
+  /* --- Surfaces --- */
+  --bg: #f4f6f9;
+  --sidebar-bg: #ffffff;
+  --panel: #ffffff;
+  --panel-tint: #fafbfd;
+  --border: #e6e9ef;
+  --border-strong: #d8dde6;
+
+  /* --- Text --- */
+  --text-primary: #101828;
+  --text-secondary: #5b6472;
+  --text-tertiary: #8993a4;
+  --text-on-accent: #ffffff;
+
+  /* --- Brand / accent (fintech blue, deliberately not the literal
+     Razorpay mark — an original identity in the same register) --- */
+  --accent: #2f5fe3;
+  --accent-hover: #274ec2;
+  --accent-tint: #eaf0fe;
+  --accent-tint-strong: #d7e3fd;
+
+  /* --- Semantic colors --- */
+  --success: #1a9c6d;
+  --success-tint: #e7f7f0;
+  --success-border: #bfe8d6;
+
+  --risk: #e2542a;
+  --risk-tint: #fdefe9;
+  --risk-border: #f6cfba;
+
+  --escalate: #b8760a;
+  --escalate-tint: #fdf3e0;
+  --escalate-border: #f3ddab;
+
+  --guardrail: #6d3fc0;
+  --guardrail-tint: #f2ecfb;
+  --guardrail-border: #ddc9f5;
+
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow: 0 2px 8px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.14);
+
+  --font-sans: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --sidebar-width: 232px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button {
+  font-family: inherit;
+}
+
+::selection {
+  background: var(--accent-tint-strong);
+  color: var(--text-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
