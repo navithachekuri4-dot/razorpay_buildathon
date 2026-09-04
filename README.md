@@ -1,278 +1,1228 @@
 # AI Revenue Recovery Agent
 
-**Razorpay AI Buildathon 2026 — Track: AI Revenue Recovery**
+### Razorpay AI Buildathon 2026 · AI Revenue Recovery
 
-> Every failed payment is not just a failed transaction. It is potentially lost revenue.
-> This agent decides, safely, whether it can be won back.
+> **Find revenue that's slipping away and win it back — safely.**
+
+An AI-assisted revenue recovery system that identifies potentially recoverable payments, diagnoses failure reasons, recommends the next-best recovery action, applies deterministic safety controls, executes approved actions in Razorpay Test Mode or simulation, verifies the outcome, and measures recovered revenue.
 
 ---
 
-## 1. Problem
+## Table of Contents
 
-Subscription and e-commerce businesses lose real revenue to failed payments — expired
-cards, bank timeouts, insufficient funds, gateway errors. Most of that revenue is not
-actually gone; it is *recoverable*, if someone (or something) diagnoses why the payment
-failed and takes the right next action quickly and safely.
+- [Overview](#overview)
+- [Problem](#problem)
+- [Solution](#solution)
+- [Architecture](#architecture)
+- [Core Design Principle](#core-design-principle)
+- [AI Decision Layer](#ai-decision-layer)
+- [Safety Guardrails](#safety-guardrails)
+- [Razorpay Test Mode](#razorpay-test-mode)
+- [Demo Results](#demo-results)
+- [Revenue Recovery Dashboard](#revenue-recovery-dashboard)
+- [Synthetic Dataset](#synthetic-dataset)
+- [Metrics](#metrics)
+- [Technology Stack](#technology-stack)
+- [Project Structure](#project-structure)
+- [Running Locally](#running-locally)
+- [Environment Variables](#environment-variables)
+- [API](#api)
+- [Testing](#testing)
+- [Demo Flow](#demo-flow)
+- [Limitations](#limitations)
+- [Future Improvements](#future-improvements)
+- [Documentation](#documentation)
 
-Doing this by hand doesn't scale. Doing it with a bot that blindly retries everything is
-dangerous — it can double-charge customers, retry people who asked to be left alone, or
-keep hammering a payment that will never succeed.
+---
 
-## 2. Solution
+# Overview
 
-An agent that runs every at-risk transaction through seven explicit steps:
+Payment failures do not always mean that revenue is permanently lost.
 
-```
-DETECT → DIAGNOSE → DECIDE → SAFETY → ACT → VERIFY → RECOVER
-```
+A failed transaction may be recoverable through the right intervention — such as retrying after a delay, requesting a payment-method update, generating a payment link, or escalating the case.
 
-An AI model diagnoses *why* a payment failed and *recommends* a next action. A completely
-separate, deterministic safety layer decides whether that action is actually allowed to
-run. Every step is written to an audit trail, so any transaction's full history —
-diagnosis, decision, safety check, execution, result — can be reconstructed after the
-fact.
+The challenge is deciding:
 
-## 3. Why this matters (to a merchant / Razorpay)
+- **Which payments should be recovered?**
+- **Why did the payment fail?**
+- **What should happen next?**
+- **Is the proposed action safe?**
+- **Did the recovery actually succeed?**
+- **When should the system stop?**
 
-- Recovering even 20-30% of failed-payment revenue is a direct, measurable line to
-  the bottom line — no new customer acquisition required.
-- Doing recovery automation *unsafely* (retrying blindly, ignoring opt-outs, retrying an
-  already-successful payment) creates real financial and compliance risk. Trust in the
-  recovery system matters as much as its recovery rate.
-- This project treats both halves as first-class: how much revenue comes back, and how
-  provably safe the process was to get it there.
+The AI Revenue Recovery Agent addresses this through an end-to-end recovery pipeline:
 
-## 4. Core architectural principle
-
-> **AI recommends. Deterministic code controls money.**
-
-The LLM (Gemini) never touches a payment. It only produces a diagnosis and a
-recommended action. A pure-Python guardrail layer — no model calls, no probabilities —
-has the final and only say over what actually executes. This separation is enforced in
-code (`app/services/guardrails.py` runs after and independently of `app/services/ai_diagnosis.py`)
-and made visible in the UI (the Transaction Inspector shows the AI's recommendation and
-the safety layer's decision as two distinct blocks).
-
-```
-Payment Events
-      │
-      ▼
-Revenue Risk Engine          (deterministic 0-100 score)
-      │
-      ▼
-AI Diagnosis                 (Gemini, or rule-based fallback — recommends only)
-      │
-      ▼
-Recovery Strategy             (reconciles AI + simple business rules)
-      │
-      ▼
-Deterministic Safety Guardrails   ← the only layer allowed to authorize execution
-      │
-      ▼
-Recovery Executor             (Razorpay Test Mode / simulation)
-      │
-      ▼
-Payment Result Verifier
-      │
-      ▼
-Audit Trail  +  Revenue Metrics
+```text
+DETECT
+   ↓
+DIAGNOSE
+   ↓
+DECIDE
+   ↓
+SAFETY
+   ↓
+ACT
+   ↓
+VERIFY
+   ↓
+RECOVER
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full breakdown, and
-[`docs/PANEL_PREP.md`](docs/PANEL_PREP.md) for 20 hard questions with honest answers.
+---
 
-## 5. Safety guardrails (deterministic, non-negotiable)
+# Problem
 
-Implemented in `backend/app/services/guardrails.py`, run in this priority order — the
-first rule that matches wins:
+Subscription and e-commerce businesses can lose revenue because of:
 
-1. **Already recovered** → stop. Never act on a transaction twice (no double charge).
-2. **Customer opted out** → stop. Overrides every other signal, including the AI.
-3. **Payment already captured** → stop. Never touch a successful payment.
-4. **Deduction status uncertain** → force verification before any retry. Never blindly
-   retry a payment that might already have gone through.
-5. **Retry limit reached** (default 3) → escalate to a human instead of retrying again,
-   even if the AI recommended a retry.
-6. Otherwise, the strategy's proposed action is allowed through.
+- 💳 Insufficient funds
+- ⏰ Expired cards
+- ❌ Invalid payment methods
+- 🌐 Bank or network failures
+- ⚠️ Gateway errors
+- 🚫 Customer opt-outs
+- 🔄 Repeated unsuccessful retries
+- ❓ Uncertain payment states
 
-## 6. AI role
+Manual recovery does not scale.
 
-Gemini receives structured transaction context (amount, failure reason, payment status,
-retry history, opt-out flag) and returns structured JSON: likely cause, recommended
-action, reasoning, confidence. If Gemini is unavailable — no API key, network failure,
-timeout, or a response that doesn't match the expected shape/vocabulary — the app falls
-back to a deterministic rule-based diagnoser that covers the same cases. Every diagnosis
-records its `ai_source` as `GEMINI` or `FALLBACK` so nothing is hidden. **The app works
-fully with zero AI credentials configured.**
+Blind automation creates another problem:
 
-## 7. Razorpay Test Mode
-
-`backend/app/services/razorpay_service.py` is the only file that talks to Razorpay.
-
-- Live keys (`rzp_live_...`) are hard-blocked at startup — the app cannot run in live
-  mode even by accident.
-- **Real Razorpay Test Mode API calls** happen for the two actions that map to genuine
-  Razorpay objects: creating a recovery **Order** (for retry actions) and creating a
-  **Payment Link** (for "update your card" actions). These return real test-mode
-  IDs/URLs.
-- Because this project's transactions are synthetic (no real card is attached to them),
-  whether that order/link actually gets "paid" is decided by a **seeded, deterministic
-  simulation** — not invented from a real capture event. This is recorded honestly on
-  every transaction via `execution_mode: "razorpay_test" | "simulation"`.
-- Missing credentials, network errors, or API failures all fall back to simulation
-  automatically. The app never crashes on Razorpay unavailability.
-
-## 8. Synthetic data
-
-120 synthetic failed-payment transactions, seeded deterministically (`SEED = 42` in
-`backend/app/seed_data.py`) so every demo run starts from the same dataset. Includes a
-realistic mix of failure reasons, some customers who've opted out, some transactions
-with an ambiguous deduction status, and some that have already exhausted their retry
-budget — so the demo can honestly show recovery, escalation, *and* guardrail blocking.
-
-**This is not real customer data and no real money moves at any point.**
-
-## 9. Metrics
-
-Computed live from the database on every request (`backend/app/services/metrics.py`) —
-nothing is hardcoded:
-
-- Total revenue at risk / recovered, recovery rate
-- Recovered / failed / escalated / safely-stopped counts
-- Guardrail intervention count
-- AI recommendation acceptance rate (how often the safety layer left the AI's
-  recommendation unchanged)
-- Recovery broken down by failure reason and by strategy, with amount recovered per
-  strategy
-
-Numbers shown anywhere in this README or the UI are from a synthetic demo run and are
-**not** a claim about real-world merchant performance.
-
-## 10. Project structure
-
+```text
+Payment Failed
+      ↓
+Retry
+      ↓
+Retry Again
+      ↓
+Retry Again
 ```
-revenue-recovery-agent/
+
+This can result in:
+
+- unnecessary retries
+- potential duplicate charges
+- ignoring customer opt-outs
+- repeated attempts against unrecoverable payments
+- poor customer experience
+
+The problem is therefore not simply **retrying failed payments**.
+
+The problem is:
+
+> **Recover the right revenue while knowing when it is safe to act and when to stop.**
+
+---
+
+# Solution
+
+The AI Revenue Recovery Agent combines:
+
+```text
+AI Reasoning
+      +
+Deterministic Business Logic
+      +
+Financial Safety Guardrails
+      +
+Payment Execution
+      +
+Outcome Verification
+      +
+Auditability
+```
+
+For every transaction, the system moves through seven stages.
+
+### 1. Detect
+
+Identify failed and potentially recoverable transactions using transaction state and risk signals.
+
+### 2. Diagnose
+
+Determine the likely reason for the payment failure.
+
+Gemini can be used for structured diagnosis, with a deterministic fallback when AI is unavailable.
+
+### 3. Decide
+
+Select the next-best recovery action based on the diagnosis and transaction context.
+
+### 4. Safety
+
+Apply deterministic guardrails before any payment-related action is executed.
+
+### 5. Act
+
+Execute the approved action through Razorpay Test Mode or simulation.
+
+### 6. Verify
+
+Check the resulting payment state.
+
+### 7. Recover
+
+Record the outcome and update recovery metrics.
+
+---
+
+# Architecture
+
+```text
+┌───────────────────────────────┐
+│       Payment Events          │
+│   Razorpay Test / Simulation  │
+└───────────────┬───────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│       Revenue Risk Engine     │
+│       Deterministic Score     │
+└───────────────┬───────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│         AI Diagnosis          │
+│    Gemini / Rule Fallback     │
+│        Recommendation         │
+└───────────────┬───────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│       Recovery Strategy       │
+│   AI + Business Rule Logic    │
+└───────────────┬───────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│      Safety Guardrails        │
+│       Deterministic           │
+│    Final Execution Authority  │
+└───────────────┬───────────────┘
+                │
+         ┌──────┴──────┐
+         │             │
+       ALLOW       BLOCK / ESCALATE
+         │
+         ▼
+┌───────────────────────────────┐
+│      Recovery Executor        │
+│   Razorpay Test / Simulation  │
+└───────────────┬───────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│      Payment Verifier         │
+│       Confirm Outcome         │
+└───────────────┬───────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│      Audit Trail + Metrics    │
+│   Revenue + Operational Data  │
+└───────────────────────────────┘
+```
+
+---
+
+# Core Design Principle
+
+> ## **AI recommends. Deterministic code controls money.**
+
+The AI model does **not** directly execute payments.
+
+Its responsibility is limited to:
+
+```text
+Transaction Context
+       ↓
+AI Diagnosis
+       ↓
+Recommended Action
+```
+
+A separate deterministic safety layer then evaluates whether that recommendation is allowed.
+
+```text
+AI Recommendation
+       ↓
+Deterministic Guardrails
+       ↓
+┌──────┴───────┐
+│              │
+ALLOW       BLOCK / ESCALATE
+│
+↓
+Execute
+↓
+Verify
+```
+
+This separation makes financial decisions predictable, testable, and auditable.
+
+---
+
+# AI Decision Layer
+
+Gemini receives structured transaction context such as:
+
+- transaction amount
+- failure reason
+- payment status
+- retry history
+- customer opt-out status
+- relevant transaction metadata
+
+The model returns structured information including:
+
+- likely cause
+- recommended action
+- reasoning
+- confidence
+
+Example:
+
+```json
+{
+  "reason": "insufficient_funds",
+  "recommended_action": "retry_after_delay",
+  "confidence": 0.7
+}
+```
+
+## Supported Recovery Actions
+
+```text
+retry_now
+retry_after_delay
+send_update_card_link
+send_payment_link
+escalate
+stop_no_retry
+verify_then_decide
+```
+
+---
+
+# AI Fallback
+
+The application does not depend on Gemini being continuously available.
+
+If Gemini is unavailable because of:
+
+- missing API key
+- network failure
+- timeout
+- API error
+- malformed response
+- unsupported action
+- invalid response structure
+
+the system falls back to deterministic rule-based diagnosis.
+
+Every diagnosis records its source:
+
+```text
+GEMINI
+```
+
+or:
+
+```text
+FALLBACK
+```
+
+This provides graceful degradation and keeps the recovery pipeline operational without requiring AI credentials.
+
+> **The application works fully with zero AI credentials configured.**
+
+---
+
+# Safety Guardrails
+
+Financial safety is enforced independently of the AI model.
+
+The guardrail system is deterministic and follows a defined priority order.
+
+## Guardrail Priority
+
+### 1. Already Recovered
+
+```text
+Already Recovered
+       ↓
+STOP
+```
+
+A transaction cannot be recovered twice.
+
+### 2. Customer Opted Out
+
+```text
+Customer Opted Out
+       ↓
+STOP
+```
+
+The opt-out condition overrides the AI recommendation.
+
+### 3. Payment Already Captured
+
+```text
+Already Captured
+       ↓
+STOP
+```
+
+The system does not attempt recovery against an already successful payment.
+
+### 4. Deduction Status Uncertain
+
+```text
+Deduction Uncertain
+       ↓
+VERIFY FIRST
+       ↓
+DECIDE
+```
+
+The system does not blindly retry a transaction that may already have resulted in a deduction.
+
+### 5. Retry Limit Reached
+
+Default:
+
+```text
+MAX_RETRY_COUNT = 3
+```
+
+Once the retry limit is reached:
+
+```text
+Retry Limit Reached
+       ↓
+ESCALATE / STOP
+```
+
+### 6. Otherwise
+
+If none of the blocking conditions apply, the proposed recovery action can proceed.
+
+---
+
+# Razorpay Test Mode
+
+Razorpay interaction is isolated in:
+
+```text
+backend/app/services/razorpay_service.py
+```
+
+This keeps payment-provider integration separate from the recovery decision logic.
+
+## Execution Modes
+
+```text
+Razorpay Test Mode
+        +
+Simulation Fallback
+```
+
+### Test Mode
+
+The application can create supported Razorpay Test Mode objects for recovery actions such as:
+
+- Test Mode Orders
+- Test Mode Payment Links
+
+### Simulation
+
+Because the project's transactions are synthetic and do not have real customer cards attached, the final payment outcome is simulated deterministically.
+
+Each transaction records its execution mode:
+
+```text
+razorpay_test
+```
+
+or:
+
+```text
+simulation
+```
+
+### Live Payment Protection
+
+Live Razorpay keys are rejected.
+
+The application is designed so that:
+
+```text
+rzp_live_...
+      ↓
+BLOCKED
+```
+
+Only Test Mode credentials are accepted.
+
+> **No real customer money is processed by this project.**
+
+---
+
+# Demo Results
+
+The current demo uses **120 deterministic synthetic transactions**.
+
+| Metric | Result |
+|---|---:|
+| Transactions processed | **120** |
+| Revenue potentially at risk | **₹1,62,980** |
+| Revenue recovered | **₹51,266** |
+| Recovery rate | **31.46%** |
+| Transactions recovered | **34** |
+| Transactions escalated | **19** |
+| Safely stopped / guardrail-blocked | **7** |
+| Transactions remaining failed | **60** |
+
+### Important
+
+These numbers are from a controlled synthetic demo run.
+
+They are **not production performance claims**.
+
+---
+
+# Revenue Recovery Dashboard
+
+The frontend provides a **Revenue Recovery Command Center** for observing the complete recovery lifecycle.
+
+## Dashboard Sections
+
+- Overview
+- Transactions
+- Recovery Queue
+- Analytics
+- Guardrails
+- Audit Logs
+- Settings
+
+## Transaction Inspector
+
+A transaction can be inspected through:
+
+```text
+Transaction
+     ↓
+Failure Reason
+     ↓
+Risk Level
+     ↓
+AI Recommendation
+     ↓
+Safety Decision
+     ↓
+Execution
+     ↓
+Verification
+     ↓
+Recovered Amount
+```
+
+This makes the distinction between **AI recommendation** and **deterministic safety decision** visible to the user.
+
+---
+
+# Synthetic Dataset
+
+The demo uses deterministic synthetic data.
+
+```text
+Transactions = 120
+SEED = 42
+```
+
+The dataset contains a mixture of:
+
+- insufficient funds
+- expired cards
+- invalid payment methods
+- network failures
+- customer opt-outs
+- uncertain deduction states
+- exhausted retry budgets
+- previously captured payments
+
+The fixed seed ensures that every demo run begins with the same dataset.
+
+> **No real customer data or real payment money is used.**
+
+---
+
+# Metrics
+
+Metrics are calculated from the application database rather than being hardcoded.
+
+The system tracks:
+
+- Revenue potentially at risk
+- Revenue recovered
+- Recovery rate
+- Recovered transactions
+- Failed transactions
+- Escalated transactions
+- Safely stopped transactions
+- Guardrail interventions
+- AI recommendation source
+- AI recommendation acceptance
+- Recovery by failure reason
+- Recovery by strategy
+- Amount recovered per strategy
+
+## Recovery Rate
+
+```text
+Recovery Rate =
+Recovered Revenue
+----------------------------- × 100
+Revenue Potentially at Risk
+```
+
+Metrics are updated as recovery operations are processed and verified.
+
+---
+
+# Audit Trail
+
+Every recovery decision is recorded.
+
+An audit record can contain:
+
+- Transaction ID
+- Previous payment state
+- Failure reason
+- AI recommendation
+- AI confidence
+- AI source
+- Safety decision
+- Guardrail reason
+- Executed action
+- Execution mode
+- Verification result
+- Recovered amount
+- Timestamp
+
+This allows the complete lifecycle of a recovery decision to be reconstructed.
+
+```text
+Diagnosis
+    ↓
+Decision
+    ↓
+Safety
+    ↓
+Execution
+    ↓
+Verification
+    ↓
+Outcome
+```
+
+---
+
+# Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React + Vite |
+| Backend | Python + FastAPI |
+| Database | SQLite + SQLAlchemy |
+| Validation | Pydantic |
+| AI | Gemini + Deterministic Fallback |
+| Payments | Razorpay Test Mode + Simulation |
+| Testing | Pytest |
+| API Testing | FastAPI TestClient |
+
+---
+
+# Project Structure
+
+```text
+razorpay_payment_app/
+│
 ├── backend/
 │   ├── app/
-│   │   ├── main.py              FastAPI app + all endpoints
-│   │   ├── config.py            env-driven settings
-│   │   ├── database.py          SQLAlchemy engine/session
-│   │   ├── models.py            Transaction, AuditLog
-│   │   ├── schemas.py           Pydantic response models
-│   │   ├── seed_data.py         synthetic dataset generator
+│   │   ├── main.py
+│   │   ├── config.py
+│   │   ├── database.py
+│   │   ├── models.py
+│   │   ├── schemas.py
+│   │   ├── seed_data.py
+│   │   │
 │   │   └── services/
-│   │       ├── risk_engine.py       Revenue Risk Engine
-│   │       ├── ai_diagnosis.py      Gemini + deterministic fallback
-│   │       ├── strategy.py          strategy decision
-│   │       ├── guardrails.py        deterministic safety layer
-│   │       ├── executor.py          recovery executor
-│   │       ├── verifier.py          payment result verifier
-│   │       ├── razorpay_service.py  Razorpay Test Mode + simulation
-│   │       ├── orchestrator.py      runs the full 7-step pipeline
-│   │       └── metrics.py           live metrics computation
-│   ├── tests/                   40 tests across every module above
+│   │       ├── risk_engine.py
+│   │       ├── ai_diagnosis.py
+│   │       ├── strategy.py
+│   │       ├── guardrails.py
+│   │       ├── executor.py
+│   │       ├── verifier.py
+│   │       ├── razorpay_service.py
+│   │       ├── orchestrator.py
+│   │       └── metrics.py
+│   │
+│   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example
-├── frontend/                    React + Vite Revenue Recovery Command Center
-│   └── src/
-│       ├── App.jsx
-│       ├── api.js
-│       └── components/
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── DEMO_SCRIPT.md
-    └── PANEL_PREP.md
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── api.js
+│   │   └── components/
+│   │
+│   └── package.json
+│
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── DEMO_SCRIPT.md
+│   └── PANEL_PREP.md
+│
+├── .gitignore
+├── README.md
+└── ...
 ```
 
-## 11. Running locally
+---
 
-### Backend
+# Running Locally
+
+## Prerequisites
+
+- Python 3.x
+- Node.js
+- npm
+- Git
+
+---
+
+## 1. Clone the Repository
+
+```bash
+git clone https://github.com/navithachekuri4-dot/razorpay_buildathon.git
+cd razorpay_buildathon
+```
+
+---
+
+## 2. Start the Backend
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate   # optional but recommended
+```
+
+### Create Virtual Environment
+
+#### Windows
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+#### macOS / Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### Install Dependencies
+
+```bash
 pip install -r requirements.txt
-cp .env.example .env       # fill in GEMINI_API_KEY / RAZORPAY_* only if you have them —
-                            # the app works fully without them
+```
+
+### Create Environment File
+
+#### Windows
+
+```bash
+copy .env.example .env
+```
+
+#### macOS / Linux
+
+```bash
+cp .env.example .env
+```
+
+### Start FastAPI
+
+```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-Swagger docs: http://127.0.0.1:8000/docs
+Backend:
 
-### Frontend
+```text
+http://127.0.0.1:8000
+```
+
+---
+
+# API
+
+## Swagger Documentation
+
+Once the backend is running:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+> This is a local development URL and is not a public deployment.
+
+FastAPI Swagger provides an interactive interface for inspecting and testing the API.
+
+---
+
+# Frontend
+
+Open a second terminal:
 
 ```bash
 cd frontend
+```
+
+Install dependencies:
+
+```bash
 npm install
+```
+
+Start Vite:
+
+```bash
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. The Vite dev server proxies `/api/*` to the backend on
-port 8000 (see `frontend/vite.config.js`).
+The frontend will usually run at:
 
-### First run
+```text
+http://127.0.0.1:5173
+```
 
-The UI will show an empty state with a **"Seed demo data"** button (calls `POST
-/seed`). After seeding, click **"Run recovery batch"** to process all transactions
-through the full pipeline.
+> This is a local development URL and is accessible only when the application is running locally.
 
-## 12. Environment variables
+The Vite development server proxies:
 
-| Variable | Required? | Purpose |
+```text
+/api/*
+```
+
+to the FastAPI backend.
+
+---
+
+# First Run
+
+When the frontend starts with an empty database:
+
+1. Click **Seed Demo Data**
+2. The application creates the synthetic transaction dataset
+3. Click **Run Recovery Batch**
+4. Transactions move through the complete recovery pipeline
+5. Dashboard metrics update automatically
+
+```text
+Seed
+ ↓
+Detect
+ ↓
+Diagnose
+ ↓
+Decide
+ ↓
+Safety
+ ↓
+Act
+ ↓
+Verify
+ ↓
+Metrics
+```
+
+---
+
+# Environment Variables
+
+| Variable | Required | Purpose |
 |---|---|---|
-| `DATABASE_URL` | No | Defaults to a local SQLite file |
-| `GEMINI_API_KEY` | No | If unset, the deterministic fallback diagnoser is used |
-| `GEMINI_MODEL` | No | Defaults to `gemini-2.0-flash` |
-| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | No | Must be **Test Mode** keys (`rzp_test_...`). If unset, everything runs in simulation. `rzp_live_...` keys are rejected outright. |
-| `MAX_RETRY_COUNT` | No | Defaults to 3 |
+| `DATABASE_URL` | No | Database connection; defaults to local SQLite |
+| `GEMINI_API_KEY` | No | Enables Gemini diagnosis |
+| `GEMINI_MODEL` | No | Gemini model configuration |
+| `RAZORPAY_KEY_ID` | No | Razorpay Test Mode key |
+| `RAZORPAY_KEY_SECRET` | No | Razorpay Test Mode secret |
+| `MAX_RETRY_COUNT` | No | Maximum retry count; defaults to 3 |
 
-Never commit a real `.env` file. `.env.example` documents the shape; `.env` is
-git-ignored.
+Example:
 
-## 13. Testing
+```env
+DATABASE_URL=
+GEMINI_API_KEY=
+GEMINI_MODEL=
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+MAX_RETRY_COUNT=3
+```
+
+If Gemini credentials are not provided, the deterministic fallback diagnoser is used.
+
+If Razorpay Test Mode credentials are not provided, the application runs using simulation.
+
+> ⚠️ Never commit real secrets or `.env` files to GitHub.
+
+---
+
+# Testing
+
+The project includes automated tests covering the major recovery components.
+
+### Test Coverage Includes
+
+- Risk scoring
+- AI diagnosis
+- Gemini fallback behavior
+- Malformed AI responses
+- Unsupported AI actions
+- Strategy selection
+- Strategy overrides
+- Customer opt-out
+- Already recovered transactions
+- Already captured payments
+- Uncertain deduction handling
+- Retry limits
+- Razorpay live-key blocking
+- Simulation fallback
+- Recovery execution
+- Payment verification
+- Full recovery pipeline
+- API endpoints
+- Metrics
+- Audit logging
+
+### Current Test Suite
+
+```text
+40 tests
+40 passed
+```
+
+Run:
 
 ```bash
 cd backend
 python -m pytest tests/ -v
 ```
 
-40 tests, covering: risk scoring, AI diagnosis (including malformed/out-of-vocabulary
-Gemini responses and the no-credentials fallback path), every guardrail rule in
-isolation and in combination, strategy overrides, Razorpay live-key blocking and
-simulation fallback, the full 7-step pipeline end-to-end, and every API endpoint.
-All 40 currently pass.
+---
 
-## 14. Demo flow
+# Demo Flow
 
-See [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) for the full 5-minute walkthrough,
-including three contrasting transactions (recovered / escalated / guardrail-blocked).
+The five-minute demo focuses on three important outcomes:
 
-## 15. Limitations (stated honestly)
+```text
+RECOVERED
+    +
+ESCALATED
+    +
+GUARDRAIL-BLOCKED
+```
 
-- **Synthetic data, not production traffic.** All 120 transactions are generated by a
-  seeded random process; there is no real merchant, customer, or card behind any of
-  them.
-- **No real capture events.** Razorpay Test Mode Orders and Payment Links created by
-  this app are real API objects, but whether they'd be "paid" is simulated, because no
-  real card is ever entered. In production, this step would be driven by real Razorpay
-  webhooks (`payment.captured`, `payment.failed`) rather than a seeded coin flip.
-  See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how that would change.
-- **Verification of an "uncertain" deduction is simulated**, since synthetic
-  transactions have no real Razorpay `payment_id` to query. In production this calls
-  `client.payment.fetch(id)`.
-- **Single-process SQLite.** Fine for a demo; a production system would need a
-  concurrency-safe database and idempotency keys per recovery attempt (see
-  `docs/ARCHITECTURE.md` for the scaling discussion).
-- **No authentication on the API.** Out of scope for a buildathon demo; a real
-  deployment would need it.
+## 1. Introduce the Problem
 
-## 16. Future improvements
+> Failed payments represent potentially recoverable revenue, but blindly retrying every payment is unsafe.
 
-- Real Razorpay webhook integration to replace simulated capture/verification outcomes.
-- Idempotency keys per recovery attempt for true exactly-once execution under retries/
-  concurrent requests.
-- A/B testing different recovery strategies per failure reason and measuring actual
-  lift.
-- Configurable guardrail thresholds per merchant (still deterministic, just
-  parameterized).
-- Postgres + a task queue (e.g. Celery/RQ) for concurrent batch processing at scale.
+## 2. Show the Dashboard
+
+Start with:
+
+```text
+120 transactions
+₹1,62,980 potentially at risk
+```
+
+## 3. Run Recovery
+
+Trigger the recovery batch.
+
+## 4. Show the Results
+
+Highlight:
+
+```text
+₹51,266 recovered
+31.46% recovery rate
+34 recovered
+19 escalated
+7 safely stopped
+```
+
+## 5. Show an AI Recommendation
+
+Demonstrate:
+
+```text
+Failure Reason
+      ↓
+AI Diagnosis
+      ↓
+Recommended Action
+```
+
+## 6. Show the Safety Layer
+
+Demonstrate:
+
+```text
+AI Recommendation
+      ↓
+Deterministic Guardrail
+      ↓
+ALLOW / BLOCK / ESCALATE
+```
+
+## 7. Show Verification
+
+Demonstrate:
+
+```text
+Execution
+    ↓
+Verification
+    ↓
+Recovered Amount
+```
+
+## 8. Show Auditability
+
+Show how the transaction's complete decision history is recorded.
+
+### Closing Message
+
+> **The goal is not to retry every failed payment.**
+>
+> **The goal is to recover the right revenue while knowing exactly when to stop.**
+
+---
+
+# Why This Architecture?
+
+The system intentionally separates **reasoning** from **financial authority**.
+
+```text
+┌────────────────────────────┐
+│            AI              │
+│ Diagnose + Recommend       │
+└─────────────┬──────────────┘
+              │
+              ▼
+┌────────────────────────────┐
+│     Deterministic Logic    │
+│ Strategy + Guardrails      │
+└─────────────┬──────────────┘
+              │
+              ▼
+┌────────────────────────────┐
+│        Execution           │
+│ Test Mode / Simulation     │
+└─────────────┬──────────────┘
+              │
+              ▼
+┌────────────────────────────┐
+│        Verification        │
+└─────────────┬──────────────┘
+              │
+              ▼
+┌────────────────────────────┐
+│     Metrics + Audit        │
+└────────────────────────────┘
+```
+
+This provides:
+
+- AI-assisted decision making
+- predictable financial controls
+- explicit stopping conditions
+- verifiable outcomes
+- auditability
+- graceful AI failure handling
+
+---
+
+# Limitations
+
+This is a **buildathon prototype**, not a production financial system.
+
+## Synthetic Data
+
+All 120 transactions are generated deterministically.
+
+There is no real merchant, customer, or card behind the dataset.
+
+## Simulated Payment Outcomes
+
+Razorpay Test Mode Orders and Payment Links can be created, but final payment outcomes for synthetic transactions are simulated because no real customer card is used.
+
+A production implementation would use real Razorpay payment events and webhooks.
+
+## Simulated Verification
+
+Uncertain deduction verification is simulated for the synthetic dataset.
+
+A production implementation would query the actual payment state.
+
+## SQLite
+
+SQLite is suitable for this prototype.
+
+A production system would require a concurrency-safe database and stronger transaction/idempotency controls.
+
+## Authentication
+
+The demo API does not currently implement authentication.
+
+A production deployment would require authentication, authorization, rate limiting, and secure secrets management.
+
+---
+
+# Future Improvements
+
+### 1. Real Razorpay Webhooks
+
+Replace simulated payment outcomes with real webhook-driven events such as:
+
+```text
+payment.captured
+payment.failed
+```
+
+### 2. Idempotency
+
+Introduce idempotency keys for recovery attempts to provide stronger protection against duplicate execution.
+
+### 3. Recovery Experiments
+
+Run controlled experiments across different recovery strategies and measure incremental recovery.
+
+### 4. Merchant-Specific Policies
+
+Allow configurable recovery thresholds while keeping the actual safety logic deterministic.
+
+### 5. Scalable Infrastructure
+
+Potential production architecture:
+
+```text
+FastAPI
+   +
+PostgreSQL
+   +
+Redis / Queue
+   +
+Background Workers
+   +
+Observability
+```
+
+### 6. Human-in-the-Loop
+
+Route high-value or ambiguous transactions to human review before execution.
+
+### 7. Improved AI Policies
+
+Use historical recovery outcomes to improve recommendations across:
+
+- failure reasons
+- payment methods
+- transaction amounts
+- customer segments
+- previous recovery outcomes
+
+---
+
+# Documentation
+
+Additional technical documentation is available in:
+
+### Architecture
+
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+
+Detailed system architecture and production considerations.
+
+### Demo Script
+
+[`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
+
+Five-minute walkthrough covering recovered, escalated, and guardrail-blocked transactions.
+
+### Panel Preparation
+
+[`docs/PANEL_PREP.md`](docs/PANEL_PREP.md)
+
+Technical questions and explanations for discussing the system during evaluation.
+
+---
+
+# Buildathon Focus
+
+## Razorpay AI Buildathon 2026
+
+### Track: AI Revenue Recovery
+
+This project focuses on:
+
+| Capability | Implementation |
+|---|---|
+| Revenue-at-risk detection | Deterministic risk engine |
+| Payment diagnosis | Gemini + deterministic fallback |
+| Recovery decisions | Strategy layer |
+| Financial safety | Deterministic guardrails |
+| Payment execution | Razorpay Test Mode / simulation |
+| Outcome verification | Payment verifier |
+| Revenue measurement | Live database metrics |
+| Traceability | Audit trail |
+
+---
+
+# Key Takeaway
+
+```text
+        🤖 AI
+         │
+         │ Diagnose
+         │ Recommend
+         ▼
+   🛡️ Guardrails
+         │
+         │ Allow / Block
+         ▼
+      ⚡ Execute
+         │
+         ▼
+      ✅ Verify
+         │
+         ▼
+      💰 Recover
+         │
+         ▼
+      📊 Measure
+```
+
+> ## **AI for reasoning.**
+> ## **Code for safety.**
+> ## **Verification for trust.**
+> ## **Metrics for accountability.**
+
+---
+
+### Built for the Razorpay AI Revenue Recovery Challenge.
