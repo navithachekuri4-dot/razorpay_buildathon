@@ -133,11 +133,10 @@ def _call_gemini(prompt: str) -> Optional[dict]:
     }
     try:
         response = httpx.post(
-            url,
-            params={"key": settings.GEMINI_API_KEY},
-            json=payload,
-            timeout=settings.GEMINI_TIMEOUT_SECONDS,
-        )
+        headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+        json=payload,
+        timeout=settings.GEMINI_TIMEOUT_SECONDS,
+)
         response.raise_for_status()
         data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
