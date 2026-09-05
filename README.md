@@ -14,23 +14,21 @@ Built for the **Razorpay AI Buildathon 2026 — AI Revenue Recovery track**.
 
 ---
 
-## Problem
+## 🎯 Problem
 
 A failed payment does not always mean lost revenue.
 
-Different payment failures need different responses.
+Different payment failures require different recovery strategies:
 
-For example:
+- Insufficient funds → retry later
+- Temporary gateway error → retry
+- Expired card → ask the customer to update the payment method
+- Uncertain deduction → verify before retrying
+- Customer opt-out → stop recovery attempts
 
-- An insufficient-funds failure may be worth retrying after some time.
-- A temporary gateway error may be worth retrying immediately.
-- An expired card may require the customer to update their payment method.
-- An unclear deduction status should not be retried blindly because the customer may already have been charged.
-- A customer who has opted out should not continue receiving recovery attempts.
+The problem is therefore not simply:
 
-So the problem is not simply:
-
-> Retry every failed payment.
+> **Retry every failed payment.**
 
 The system needs to answer:
 
@@ -38,41 +36,62 @@ The system needs to answer:
 
 ---
 
-## What I Built
+## 💡 Solution
 
-I built an **AI Revenue Recovery Agent** that follows a complete recovery workflow:
+I built an **AI Revenue Recovery Agent** that performs an end-to-end recovery workflow:
 
-1. Detect payments that are at risk.
-2. Calculate a risk score.
-3. Diagnose the payment failure.
-4. Use Gemini to recommend the next recovery action.
-5. Validate the AI response.
-6. Apply deterministic safety rules.
-7. Execute the approved action using Razorpay Test Mode or simulation.
-8. Verify the payment result.
-9. Record the decision in an audit trail.
-10. Measure the revenue recovered.
+```text
+Detect
+  ↓
+Assess Risk
+  ↓
+Diagnose with AI
+  ↓
+Select Recovery Strategy
+  ↓
+Apply Safety Guardrails
+  ↓
+Execute Recovery
+  ↓
+Verify Result
+  ↓
+Measure Revenue Recovered
+```
 
-The main design decision is:
+The key design principle is:
 
 > **AI recommends the action, but deterministic code decides whether the action is allowed.**
 
-This prevents an AI response from directly performing an unsafe financial operation.
+This prevents an AI recommendation from directly performing an unsafe financial operation.
 
 ---
 
-## AI's Role
+## 🤖 AI Integration
 
-Gemini is used for payment failure diagnosis and recovery recommendation.
+Gemini is used to diagnose payment failures and recommend the next recovery action.
 
-The AI receives transaction information and failure context and returns a structured response containing:
+### Model
+
+```text
+Google Gemini 3.5 Flash Lite
+```
+
+The AI receives transaction context such as:
+
+- payment amount
+- failure reason
+- retry count
+- customer opt-out status
+- payment status
+
+It returns a structured response containing:
 
 - failure diagnosis
-- recommended recovery action
+- recommended action
 - confidence
 - reasoning
 
-For example:
+Example:
 
 ```text
 Payment amount: ₹1,999
@@ -81,22 +100,20 @@ Retry count: 1
 Customer opted out: No
 ```
 
-Gemini can recommend:
+Gemini may recommend:
 
 ```text
 Action: retry_after_delay
 Confidence: 0.85
 ```
 
-The recommendation is then passed through the deterministic safety layer before execution.
-
-The AI is therefore part of the actual decision-making process instead of being used only as a chatbot or text generator.
+The recommendation is then validated and passed through deterministic safety checks before execution.
 
 ---
 
-## Recovery Actions
+## 🔄 Recovery Actions
 
-The agent works with a controlled set of recovery actions:
+The agent supports a controlled set of recovery actions:
 
 ```text
 retry_now
@@ -108,21 +125,19 @@ stop_no_retry
 verify_then_decide
 ```
 
-The action vocabulary is restricted so the AI cannot invent arbitrary payment operations.
+Restricting the action vocabulary prevents the AI from inventing arbitrary payment operations.
 
 ---
 
-## Safety and Guardrails
+## 🛡️ Safety & Guardrails
 
-Because this system deals with payment recovery, safety is handled separately from the AI recommendation.
-
-The deterministic guardrail layer has the final authority.
+Payment recovery requires strong controls, so safety decisions are handled separately from AI reasoning.
 
 ### Retry Limit
 
 A transaction cannot be retried indefinitely.
 
-The default maximum retry count is:
+Default maximum:
 
 ```text
 3 retries
@@ -130,11 +145,11 @@ The default maximum retry count is:
 
 ### Customer Opt-Out
 
-If a customer has opted out of recovery communication, the system stops instead of continuing recovery attempts.
+If a customer has opted out of recovery communication, the system stops further recovery attempts.
 
 ### Already Captured Payment
 
-If a payment has already been captured, the system does not attempt another recovery action.
+If a payment is already captured, the system does not attempt another recovery action.
 
 ### Uncertain Deduction
 
@@ -142,21 +157,22 @@ If money may already have been deducted but the payment status is unclear, the s
 
 It first requires verification.
 
-### Stop After Successful Recovery
+### Successful Recovery
 
 Once a payment is successfully recovered, the workflow stops for that transaction.
 
 ### AI Cannot Bypass Guardrails
 
-Even if Gemini recommends a retry with high confidence, the deterministic safety layer can reject it.
+Even if Gemini recommends a retry with high confidence, deterministic rules can reject it.
 
-The basic principle is:
-
-> **AI decides what might work. Rules decide what is allowed.**
+```text
+AI decides what might work.
+Rules decide what is allowed.
+```
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ```text
                     Payment Events
@@ -191,53 +207,43 @@ The basic principle is:
 
 ### Main Components
 
-#### Payment Events
+**Revenue Risk Engine**
 
-Contains transaction information and payment failure status.
+Identifies at-risk payments and calculates a risk score using transaction amount, failure reason, retry history and payment state.
 
-#### Revenue Risk Engine
+**AI Diagnosis**
 
-Identifies at-risk revenue and calculates a risk score using information such as:
+Uses Gemini to understand the failure and recommend a recovery action.
 
-- transaction amount
-- failure reason
-- retry history
-- customer opt-out status
-- uncertain payment status
+**Recovery Strategy**
 
-#### AI Diagnosis
+Maps the diagnosis to a supported recovery action.
 
-Gemini analyzes the payment context and returns a structured recovery recommendation.
+**Deterministic Guardrails**
 
-#### Recovery Strategy
+Checks whether the proposed action is safe and permitted.
 
-Converts the diagnosis into one of the supported recovery actions.
+**Recovery Executor**
 
-#### Deterministic Safety Guardrails
+Executes the approved action using Razorpay Test Mode or simulation.
 
-Checks whether the recommended action is safe and permitted.
+**Payment Result Verifier**
 
-#### Recovery Executor
+Determines whether the recovery attempt actually succeeded.
 
-Executes the approved recovery action using Razorpay Test Mode or simulation.
+**Audit Trail**
 
-#### Payment Result Verifier
+Records the important decisions and results throughout the workflow.
 
-Checks the result of the recovery attempt and determines whether the payment was successfully recovered.
-
-#### Audit Trail
-
-Records important decisions and results throughout the workflow.
-
-#### Metrics
+**Metrics**
 
 Calculates recovery performance from transaction data.
 
 ---
 
-## Example Decision
+## 📊 Example Decision
 
-Consider a payment that failed because of insufficient funds.
+Consider:
 
 ```text
 Transaction:        TXN0002
@@ -246,8 +252,6 @@ Failure reason:     insufficient_funds
 Retry count:        1
 Opt-out:            No
 ```
-
-The risk engine evaluates the transaction.
 
 Gemini recommends:
 
@@ -267,9 +271,7 @@ Payment status unclear?  No
 
 The action is allowed.
 
-The recovery action is executed and the result is verified.
-
-If the payment succeeds:
+If the recovery succeeds:
 
 ```text
 RECOVERED
@@ -280,68 +282,9 @@ The transaction is then marked as recovered and no further retry is attempted.
 
 ---
 
-## Dashboard
+## 📈 Revenue Recovery Metrics
 
-The frontend provides several views of the recovery process.
-
-### Overview
-
-Shows:
-
-- total revenue at risk
-- revenue recovered
-- recovery rate
-- transactions processed
-- recovered transactions
-- escalated transactions
-- guardrail interventions
-- recovery pipeline
-
-### Transactions
-
-Shows individual payment records, failure reasons and recovery actions.
-
-### Recovery Queue
-
-Shows transactions that are currently eligible for recovery processing.
-
-### Analytics
-
-Shows recovery metrics calculated from transaction data.
-
-### Guardrails
-
-Shows transactions where safety rules affected or blocked the proposed recovery action.
-
-### Audit Logs
-
-Shows the complete decision timeline:
-
-```text
-Detect
-   ↓
-Risk Assessment
-   ↓
-AI Diagnosis
-   ↓
-Recovery Decision
-   ↓
-Safety Check
-   ↓
-Execution
-   ↓
-Verification
-```
-
-This makes it possible to understand what the agent did and why.
-
----
-
-## Measuring Revenue Recovery
-
-The project measures the financial outcome of the recovery workflow.
-
-The dashboard tracks:
+The dashboard tracks actual application data, including:
 
 - Total revenue at risk
 - Total revenue recovered
@@ -352,9 +295,7 @@ The dashboard tracks:
 - Guardrail interventions
 - Failed recovery attempts
 
-The metrics are calculated from the application's transaction data rather than being hard-coded into the dashboard.
-
-The recovery flow is:
+The recovery rate is based on the application's processed transaction data.
 
 ```text
 Revenue at Risk
@@ -368,31 +309,86 @@ Revenue Recovered
 Recovery Rate
 ```
 
-The demo uses synthetic transactions, so these numbers are demonstration results and are **not production performance claims**.
+The demo uses synthetic transactions, so displayed recovery numbers are demonstration results and not production performance claims.
 
 ---
 
-## Dynamic Demo Batches
+## 🖥️ Dashboard
 
-The application supports generating additional demo batches.
+The frontend provides multiple views:
 
-The initial demo dataset contains:
+### Overview
+
+Displays:
+
+- revenue at risk
+- recovered revenue
+- recovery rate
+- processed transactions
+- recovered transactions
+- escalations
+- guardrail interventions
+- recovery pipeline
+
+### Transactions
+
+Displays individual payment records, failure reasons and recovery actions.
+
+### Recovery Queue
+
+Shows transactions currently eligible for recovery.
+
+### Analytics
+
+Displays recovery performance metrics.
+
+### Guardrails
+
+Shows transactions where safety rules affected or blocked a proposed action.
+
+### Audit Logs
+
+Shows the decision timeline:
 
 ```text
-120 synthetic transactions
+Detect
+  ↓
+Risk Assessment
+  ↓
+AI Diagnosis
+  ↓
+Recovery Decision
+  ↓
+Safety Check
+  ↓
+Execution
+  ↓
+Verification
 ```
 
-The **Generate New Demo Batch** feature adds another 120 synthetic transactions without deleting previously processed transactions.
+---
 
-For example:
+## 🧪 Dynamic Demo Batches
+
+The application supports generating additional synthetic payment batches.
+
+The initial dataset contains:
 
 ```text
-Initial batch
+120 transactions
+```
+
+Clicking **Generate New Demo Batch** appends another 120 transactions without deleting existing data.
+
+Example:
+
+```text
+Initial Batch
 120 transactions
 
         +
 
-New demo batch
+New Batch
 120 transactions
 
         =
@@ -400,15 +396,15 @@ New demo batch
 240 transactions
 ```
 
-The application processes only transactions that have not already been processed.
+Previously processed transactions are not processed again.
 
-The `/seed` endpoint can still be used when a clean reset of the demo data is needed.
+The `/seed` endpoint can be used when a clean reset is required.
 
 ---
 
-## AI Failure Handling
+## 🔁 AI Failure Handling
 
-The application does not completely depend on Gemini being available.
+The system does not completely depend on Gemini being available.
 
 If Gemini:
 
@@ -417,15 +413,13 @@ If Gemini:
 - returns malformed JSON
 - returns an unsupported action
 - returns invalid confidence data
-- or otherwise fails validation
+- fails validation
 
 the application uses a deterministic rule-based fallback.
 
-The fallback recommendation is also passed through the same recovery and safety workflow.
+The fallback goes through the same safety and recovery workflow.
 
-This means an AI service failure does not cause the entire recovery pipeline to fail.
-
-The audit log records whether the diagnosis came from:
+Audit logs identify whether the diagnosis came from:
 
 ```text
 GEMINI
@@ -437,13 +431,15 @@ or:
 FALLBACK
 ```
 
+This allows the recovery pipeline to remain functional even when the AI service is unavailable.
+
 ---
 
-## Razorpay Integration
+## 💳 Razorpay Integration
 
-The project is designed to work with **Razorpay Test Mode**.
+The project is designed for **Razorpay Test Mode**.
 
-For the buildathon demonstration, payment execution can also use simulation.
+For the buildathon demonstration, recovery execution can also use simulation.
 
 No real customer payments are processed.
 
@@ -451,7 +447,7 @@ This allows the complete recovery workflow to be demonstrated without putting re
 
 ---
 
-## Technology Stack
+## 🧰 Technology Stack
 
 ### Frontend
 
@@ -477,7 +473,7 @@ This allows the complete recovery workflow to be demonstrated without putting re
 ### Payments
 
 - Razorpay Test Mode
-- Simulation mode
+- Simulation
 
 ### Testing
 
@@ -485,9 +481,7 @@ This allows the complete recovery workflow to be demonstrated without putting re
 
 ---
 
-## API Endpoints
-
-The backend exposes REST APIs for the main recovery operations.
+## 🔌 API Endpoints
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -498,13 +492,13 @@ The backend exposes REST APIs for the main recovery operations.
 | GET | `/transactions/{transaction_id}` | Get one transaction |
 | POST | `/recover/batch` | Process the recovery queue |
 | POST | `/recover/{transaction_id}` | Recover one transaction |
-| GET | `/audit/{transaction_id}` | Get the transaction audit trail |
+| GET | `/audit/{transaction_id}` | Get transaction audit logs |
 
-The backend also provides automatically generated API documentation through FastAPI Swagger.
+FastAPI Swagger documentation is available through the backend API link above.
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```text
 razorpay_buildathon/
@@ -534,18 +528,15 @@ razorpay_buildathon/
 │   └── package.json
 │
 ├── docs/
-│
 ├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Running the Project Locally
+## 🚀 Running Locally
 
 ### Backend
-
-Go to the backend directory:
 
 ```bash
 cd backend
@@ -569,9 +560,7 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Create a `.env` file using `.env.example`.
-
-Example:
+Create a `.env` file:
 
 ```text
 DATABASE_URL=sqlite:///./revenue_recovery.db
@@ -594,17 +583,7 @@ Open another terminal:
 
 ```bash
 cd frontend
-```
-
-Install dependencies:
-
-```bash
 npm install
-```
-
-Start the frontend:
-
-```bash
 npm run dev
 ```
 
@@ -612,9 +591,9 @@ Open the local URL provided by Vite.
 
 ---
 
-## Testing
+## ✅ Testing
 
-The backend contains automated tests for important parts of the recovery workflow, including:
+The project includes automated tests covering:
 
 - API behaviour
 - seed data generation
@@ -627,7 +606,7 @@ The backend contains automated tests for important parts of the recovery workflo
 - payment verification
 - fallback behaviour
 
-Run the test suite with:
+Run:
 
 ```bash
 python -m pytest -q
@@ -641,34 +620,44 @@ Current test result:
 
 ---
 
-## Demo Flow
+## 🎬 Demo Flow
 
-A typical demonstration can be run as follows:
+A typical demonstration:
 
 1. Open the Revenue Recovery dashboard.
-2. Generate a new demo batch if required.
+2. Generate a new demo batch.
 3. Open the Recovery Queue.
-4. Start the recovery process.
+4. Start batch recovery.
 5. Open Audit Logs.
 6. Select a transaction.
 7. Show the Gemini diagnosis.
 8. Show the recommended recovery action.
 9. Show the deterministic safety decision.
-10. Show the execution result.
-11. Show the verification result.
+10. Show execution.
+11. Show verification.
 12. Return to Overview.
-13. Show the updated recovered revenue.
-14. Open Guardrails and demonstrate a transaction where an unsafe action was blocked.
+13. Show recovered revenue.
+14. Open Guardrails and demonstrate an unsafe action being blocked.
 
-A useful example is an insufficient-funds transaction where Gemini recommends `retry_after_delay`, followed by successful recovery and verification.
+The strongest demo is one where you show both:
+
+```text
+AI recommendation → Recovery succeeds
+```
+
+and:
+
+```text
+AI recommendation → Guardrail blocks unsafe action
+```
 
 ---
 
-## What Makes the Approach Different
+## ⭐ What Makes This Approach Different
 
-I did not want the project to simply classify payment failures using AI.
+The project is not just an AI classifier for payment failures.
 
-The goal was to build the complete recovery loop:
+It builds the complete recovery loop:
 
 ```text
 Detect
@@ -686,75 +675,74 @@ Verify
 Measure
 ```
 
-The important design choice is the separation between AI reasoning and financial execution.
+The key separation is between **AI reasoning** and **financial execution**.
 
-The AI can recommend an action, but it cannot override:
+Gemini can recommend:
 
-- retry limits
-- customer opt-out
-- captured payment checks
-- uncertain deduction checks
-- deterministic safety rules
+```text
+retry_now
+retry_after_delay
+send_update_card_link
+send_payment_link
+escalate
+```
 
-This makes the system easier to test, explain and control.
+But deterministic code controls whether the action is actually allowed.
 
----
+This makes the system easier to:
 
-## Security Considerations
-
-API keys are stored as environment variables and are not committed to the repository.
-
-The project uses synthetic transaction data.
-
-Razorpay Test Mode and simulation are used for the demonstration rather than real customer payments.
-
-Recovery actions are restricted by deterministic safety rules.
-
-Secrets should never be included in:
-
-- source code
-- README files
-- GitHub commits
-- screenshots
-- frontend code
-- public logs
+- test
+- audit
+- explain
+- control
+- demonstrate safely
 
 ---
 
-## Limitations
+## 🔐 Security Considerations
 
-This is a buildathon prototype and not a production payment recovery system.
+- API keys are stored as environment variables.
+- Secrets are not committed to the repository.
+- Synthetic transaction data is used.
+- Razorpay Test Mode/simulation is used.
+- Recovery actions are restricted by deterministic rules.
+- Secrets should never be included in source code, screenshots, commits or public logs.
+
+---
+
+## ⚠️ Limitations
+
+This is a buildathon prototype, not a production payment recovery system.
 
 Current limitations include:
 
-- Demo transactions are synthetic.
-- Payment execution uses Razorpay Test Mode and simulation.
-- Recovery policies are simplified for the prototype.
-- AI diagnosis depends on Gemini availability and API limits.
-- Production deployment would require additional authentication, monitoring, access controls, fraud prevention and compliance reviews.
-- The current recovery strategy is rule-guided rather than learned from a large historical payment dataset.
+- Synthetic demo transactions
+- Razorpay Test Mode/simulation
+- Simplified recovery policies
+- Gemini API availability and quota limitations
+- No production-grade authentication or access control
+- No large historical dataset for learning recovery policies
+- Additional fraud, compliance and monitoring controls would be required for production
 
 ---
 
-## Future Improvements
+## 🔮 Future Improvements
 
-Possible improvements include:
-
-- Learning recovery policies from historical recovery outcomes.
-- Personalizing recovery timing for different customer segments.
-- Adding more payment failure patterns.
-- Adding human approval for high-value recoveries.
-- Adding email or SMS recovery notifications.
-- Adding stronger duplicate-payment detection.
-- Adding fraud-risk checks.
-- Building offline evaluation datasets for recovery strategies.
-- Tracking recovery performance over longer periods.
+- Learn recovery policies from historical outcomes
+- Personalize recovery timing
+- Add more payment failure patterns
+- Add human approval for high-value recoveries
+- Add email/SMS recovery workflows
+- Improve duplicate-payment detection
+- Add fraud-risk checks
+- Build offline evaluation datasets
+- Track long-term recovery performance
 
 ---
 
-## Buildathon Track
+## 🏆 Buildathon Track
 
-This project was built for:
+Built for:
 
 **Razorpay AI Buildathon 2026**
 
@@ -769,14 +757,17 @@ The project focuses on:
 - selecting the appropriate intervention
 - executing bounded recovery actions
 - measuring recovered revenue
-- handling escalation and stopping conditions
+- applying stopping rules
+- handling escalation
 - maintaining an audit trail
 - applying deterministic safety controls around AI decisions
 
 ---
 
-## Disclaimer
+## 📌 Disclaimer
 
 This is a student buildathon prototype using synthetic data and Razorpay Test Mode/simulation.
 
-It does not process real customer payments, and the demonstrated recovery numbers should not be interpreted as production performance.
+It does not process real customer payments.
+
+Demonstrated recovery numbers are prototype results and should not be interpreted as production performance.
