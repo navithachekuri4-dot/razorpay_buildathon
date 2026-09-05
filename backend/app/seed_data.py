@@ -51,16 +51,23 @@ def _make_customer(rng: random.Random, idx: int) -> tuple[str, str]:
     return f"CUST{idx:04d}", name
 
 
-def generate_transactions(count: int = 120) -> list[dict]:
-    rng = random.Random(SEED)
+def generate_transactions(count: int = 120, seed: int = SEED, start_index: int = 1) -> list[dict]:
+    rng = random.Random(seed)
     now = datetime.now(timezone.utc)
     rows = []
 
     for i in range(1, count + 1):
-        txn_id = f"TXN{i:04d}"
-        customer_id, _name = _make_customer(rng, rng.randint(1, count))
+        txn_id = f"TXN{start_index + i - 1:04d}"
+        customer_id, _name = _make_customer(
+        rng,
+        rng.randint(start_index, start_index + count - 1),
+)
         has_subscription = rng.random() < 0.7
-        subscription_id = f"SUB{rng.randint(1, count // 2):04d}" if has_subscription else None
+        subscription_id = (
+    f"SUB{rng.randint(start_index, start_index + max(1, count // 2) - 1):04d}"
+    if has_subscription
+    else None
+)
 
         amount = float(rng.choice(AMOUNT_BUCKETS))
         failure_reason = rng.choices(FAILURE_REASONS, weights=FAILURE_WEIGHTS, k=1)[0]
@@ -115,6 +122,21 @@ def seed_database(db: Session, count: int = 120, reset: bool = True) -> int:
         db.commit()
 
     rows = generate_transactions(count)
+    objects = [Transaction(**row) for row in rows]
+    db.bulk_save_objects(objects)
+    db.commit()
+    return len(objects)  
+
+def add_seed_batch(db: Session, count: int = 120) -> int:
+    existing_count = db.query(Transaction).count()
+    start_index = existing_count + 1
+
+    rows = generate_transactions(
+        count=count,
+        seed=SEED + start_index,
+        start_index=start_index,
+    )
+
     objects = [Transaction(**row) for row in rows]
     db.bulk_save_objects(objects)
     db.commit()
