@@ -12,8 +12,9 @@ from app.schemas import (
     BatchRecoverResponse,
     MetricsOut,
     SeedResponse,
+    SeedBatchResponse,
 )
-from app.seed_data import seed_database
+from app.seed_data import seed_database, append_batch
 from app.services.orchestrator import process_transaction
 from app.services.metrics import compute_metrics
 
@@ -44,6 +45,25 @@ def health():
 def seed(count: int = 120, db: Session = Depends(get_db)):
     created = seed_database(db, count=count, reset=True)
     return SeedResponse(created=created, message=f"Seeded {created} synthetic failed-payment transactions.")
+
+
+@app.post("/seed/batch", response_model=SeedBatchResponse)
+def seed_batch(count: int = 120, db: Session = Depends(get_db)):
+    """
+    Appends `count` new synthetic transactions after whatever already
+    exists — never resets, never overwrites. Unlike /seed, safe to call
+    repeatedly; each call continues the transaction_id sequence
+    (TXN0121-0240, TXN0241-0360, ...) with a different random seed per
+    batch so the new data isn't a repeat of the previous batch.
+    """
+    result = append_batch(db, count=count)
+    return SeedBatchResponse(
+        created=result["created"],
+        start_id=result["start_id"],
+        end_id=result["end_id"],
+        message=f"Added {result['created']} new demo transactions "
+                f"({result['start_id']}\u2013{result['end_id']}).",
+    )
 
 
 @app.get("/transactions", response_model=list[TransactionOut])

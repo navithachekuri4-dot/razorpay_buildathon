@@ -69,6 +69,42 @@ def test_recover_transaction_not_found():
     assert resp.status_code == 404
 
 
+def test_seed_batch_appends_without_wiping_existing():
+    client.post("/seed", params={"count": 30})
+    resp = client.post("/seed/batch", params={"count": 20})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["created"] == 20
+    assert body["start_id"] == "TXN0031"
+    assert body["end_id"] == "TXN0050"
+    assert "Added 20 new demo transactions" in body["message"]
+
+    all_txns = client.get("/transactions").json()
+    assert len(all_txns) == 50
+
+
+def test_seed_batch_default_count_is_120():
+    client.post("/seed", params={"count": 5})
+    resp = client.post("/seed/batch")
+    assert resp.status_code == 200
+    assert resp.json()["created"] == 120
+
+
+def test_recover_batch_only_processes_unprocessed_after_new_batch():
+    client.post("/seed", params={"count": 20})
+    first = client.post("/recover/batch", params={"limit": 20}).json()
+    assert first["processed"] == 20
+
+    # Re-running immediately with only_unprocessed=True should process nothing new.
+    second = client.post("/recover/batch", params={"limit": 20}).json()
+    assert second["processed"] == 0
+
+    # Appending a fresh batch gives the batch endpoint new work to do.
+    client.post("/seed/batch", params={"count": 15})
+    third = client.post("/recover/batch", params={"limit": 200}).json()
+    assert third["processed"] == 15
+
+
 def test_search_and_filter_transactions():
     client.post("/seed", params={"count": 20})
     all_txns = client.get("/transactions").json()

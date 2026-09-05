@@ -1,4 +1,5 @@
 from app.models import AuditLog
+from app.services import ai_diagnosis
 from app.services.orchestrator import process_transaction
 from tests.conftest import make_txn
 
@@ -65,6 +66,35 @@ def test_retry_limit_exceeded_escalates_instead_of_retrying(db_session):
 
     assert result.recovery_action in ("escalate", "stop_no_retry")
     assert result.recovery_result in ("ESCALATED", "SKIPPED")
+
+
+def test_guardrails_override_even_a_confident_gemini_recommendation(db_session, monkeypatch):
+    """
+    Requirement: Gemini must NOT bypass safety guardrails. Simulate Gemini
+    confidently recommending a retry for an opted-out customer — the
+    guardrail layer must still force stop_no_retry regardless.
+    """
+    monkeypatch.setattr(
+        ai_diagnosis,
+        "_call_gemini",
+        lambda prompt: {
+            "likely_cause": "Transient gateway issue",
+            "recommended_action": "retry_now",
+            "reasoning": "Looks transient, safe to retry.",
+            "confidence": 0.97,
+        },
+    )
+    txn = make_txn(transaction_id="TXN_PIPE_GEMINI_OPTOUT", customer_opted_out=True)
+    db_session.add(txn)
+    db_session.commit()
+
+    result = process_transaction(db_session, txn)
+
+    assert result.ai_source == "GEMINI"
+    assert result.ai_recommended_action == "retry_now"
+    assert result.guardrail_decision == "BLOCKED"
+    assert result.recovery_action == "stop_no_retry"
+    assert result.recovery_result == "SKIPPED"
 
 
 def test_already_recovered_transaction_is_not_processed_again(db_session):

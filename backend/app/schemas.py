@@ -97,3 +97,10 @@ class MetricsOut(BaseModel):
 class SeedResponse(BaseModel):
     created: int
     message: str
+
+
+class SeedBatchResponse(BaseModel):
+    created: int
+    start_id: str
+    end_id: str
+    message: str

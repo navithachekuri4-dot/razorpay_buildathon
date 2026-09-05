@@ -142,44 +142,75 @@ def _call_gemini(prompt: str) -> Optional[dict]:
         data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         return json.loads(text)
-    except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError, ValueError):
-        # Network failure, bad status, unexpected shape, or invalid JSON —
-        # all treated identically: fall back safely.
+    except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError, ValueError, TypeError):
+        # Network failure (incl. timeout — httpx.TimeoutException subclasses
+        # httpx.HTTPError), bad HTTP status, unexpected response shape, or
+        # invalid/non-JSON text — all treated identically: fall back safely.
         return None
+    except Exception:
+        # Defense in depth: no matter what goes wrong talking to an external
+        # API, diagnosis must never crash the recovery pipeline. Anything
+        # not anticipated above still routes to the deterministic fallback.
+        return None
+
+
+def _validate_gemini_response(raw: dict) -> bool:
+    """
+    Structural + vocabulary validation only — this function does not (and
+    cannot) judge whether the AI's reasoning is good. That's exactly why
+    guardrails.py exists downstream and re-checks the final action on its
+    own terms regardless of what passes here.
+    """
+    if not isinstance(raw, dict):
+        return False
+
+    action = raw.get("recommended_action")
+    confidence = raw.get("confidence")
+    likely_cause = raw.get("likely_cause")
+    reasoning = raw.get("reasoning")
+
+    if not (isinstance(action, str) and action in settings.ALLOWED_ACTIONS):
+        return False
+    if not (isinstance(likely_cause, str) and likely_cause.strip()):
+        return False
+    if not (isinstance(reasoning, str) and reasoning.strip()):
+        return False
+    # bool is a subclass of int in Python — exclude it explicitly so
+    # confidence=true isn't silently accepted as confidence=1.0.
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return False
+    if not (0 <= confidence <= 1):
+        return False
+    return True
 
 
 def diagnose(txn: dict) -> Diagnosis:
     """
     txn: dict with keys amount, failure_reason, payment_status, retry_count,
     previous_attempts, customer_opted_out.
+
+    Contract (unconditional, regardless of Gemini's availability or output):
+      - GEMINI_API_KEY configured + Gemini reachable + response passes
+        validation -> source="GEMINI".
+      - GEMINI_API_KEY missing, Gemini unreachable/errored/timed out, or its
+        response fails validation (bad JSON, out-of-vocabulary action,
+        missing/malformed fields) -> source="FALLBACK", same deterministic
+        rules either way.
+      - This function never raises.
     """
     raw = _call_gemini(_build_prompt(txn))
 
-    if raw is not None:
-        action = raw.get("recommended_action")
-        confidence = raw.get("confidence")
-        likely_cause = raw.get("likely_cause")
-        reasoning = raw.get("reasoning")
-
-        valid = (
-            isinstance(action, str)
-            and action in settings.ALLOWED_ACTIONS
-            and isinstance(likely_cause, str)
-            and isinstance(reasoning, str)
-            and isinstance(confidence, (int, float))
-            and 0 <= confidence <= 1
+    if raw is not None and _validate_gemini_response(raw):
+        return Diagnosis(
+            likely_cause=raw["likely_cause"],
+            recommended_action=raw["recommended_action"],
+            reasoning=raw["reasoning"],
+            confidence=float(raw["confidence"]),
+            source="GEMINI",
         )
-        if valid:
-            return Diagnosis(
-                likely_cause=likely_cause,
-                recommended_action=action,
-                reasoning=reasoning,
-                confidence=float(confidence),
-                source="GEMINI",
-            )
-        # Gemini responded, but the output didn't match our contract
-        # (wrong action vocabulary, missing fields, bad types). We do not
-        # trust it — fall through to the deterministic path.
+    # Either Gemini was never called (no key / call failed), or it responded
+    # but didn't match our contract. We do not trust a non-conforming
+    # response — fall through to the deterministic path either way.
 
     return _fallback_diagnosis(
         failure_reason=txn["failure_reason"],
