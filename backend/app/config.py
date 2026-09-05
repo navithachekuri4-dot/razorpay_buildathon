@@ -17,7 +17,7 @@ class Settings:
 
     # --- Gemini ---
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
     GEMINI_TIMEOUT_SECONDS: float = 8.0
 
     # --- Razorpay Test Mode ---
