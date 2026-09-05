@@ -1,4 +1,4 @@
-const BASE = import.meta.env.VITE_API_URL || "/api";
+const BASE = "/api";
 
 async function request(path, options = {}) {
   const resp = await fetch(`${BASE}${path}`, {
@@ -21,6 +21,7 @@ async function request(path, options = {}) {
 export const api = {
   health: () => request("/health"),
   seed: (count = 120) => request(`/seed?count=${count}`, { method: "POST" }),
+  seedBatch: (count = 120) => request(`/seed/batch?count=${count}`, { method: "POST" }),
   listTransactions: (params = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== undefined && v !== "")

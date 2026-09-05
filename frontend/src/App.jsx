@@ -9,6 +9,7 @@ import AgentPipeline from "./components/AgentPipeline.jsx";
 import OperationsBreakdown from "./components/OperationsBreakdown.jsx";
 import SafetyControls from "./components/SafetyControls.jsx";
 import BatchRecoveryButton from "./components/BatchRecoveryButton.jsx";
+import GenerateBatchButton from "./components/GenerateBatchButton.jsx";
 import RecoveryQueue from "./components/RecoveryQueue.jsx";
 import TransactionInspector from "./components/TransactionInspector.jsx";
 import EmptyState from "./components/EmptyState.jsx";
@@ -41,6 +42,8 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [batchStatus, setBatchStatus] = useState("idle");
   const [batchResult, setBatchResult] = useState(null);
+  const [generateStatus, setGenerateStatus] = useState("idle");
+  const [generateResult, setGenerateResult] = useState(null);
   const [recoveringId, setRecoveringId] = useState(null);
 
   const [selectedId, setSelectedId] = useState(null);
@@ -110,6 +113,23 @@ export default function App() {
     }
   };
 
+  const handleGenerateBatch = async () => {
+    setGenerateStatus("running");
+    try {
+      const result = await api.seedBatch(120);
+      setGenerateResult(result);
+      setGenerateStatus("done");
+      // A freshly generated batch is new, unprocessed data — clear the
+      // previous "no new transactions" state so Run Recovery Batch's
+      // message reflects reality again once it's re-run.
+      setBatchStatus("idle");
+      setBatchResult(null);
+      await refresh();
+    } catch {
+      setGenerateStatus("error");
+    }
+  };
+
   const handleRecoverOne = async (id) => {
     setRecoveringId(id);
     try {
@@ -162,11 +182,18 @@ export default function App() {
                     <SafetyControls compact />
                   </div>
                   <OperationsBreakdown metrics={metrics} />
-                  <BatchRecoveryButton
-                    onRun={handleRunBatch}
-                    status={batchStatus}
-                    lastResult={batchResult}
-                  />
+                  <div className="actions-stack">
+                    <GenerateBatchButton
+                      onRun={handleGenerateBatch}
+                      status={generateStatus}
+                      lastResult={generateResult}
+                    />
+                    <BatchRecoveryButton
+                      onRun={handleRunBatch}
+                      status={batchStatus}
+                      lastResult={batchResult}
+                    />
+                  </div>
                   <RecoveryQueue
                     title="Recovery queue"
                     transactions={filteredTransactions}

@@ -1,13 +1,19 @@
 export default function BatchRecoveryButton({ onRun, status, lastResult }) {
+  const isEmpty = status === "done" && lastResult && lastResult.processed === 0;
+
   return (
     <div className="batch-bar">
       <div className="batch-bar-text">
-        {status === "done" && lastResult ? (
+        {status === "done" && lastResult && !isEmpty ? (
           <span className="batch-result">
             <span className="batch-result-check">✓</span>
             Batch complete · <strong>{lastResult.recovered} recovered</strong> ·{" "}
             {lastResult.escalated} escalated · {lastResult.safely_stopped} safely stopped ·{" "}
             {lastResult.failed} failed
+          </span>
+        ) : isEmpty ? (
+          <span className="batch-result batch-result--warning">
+            No new transactions to process. Generate a new demo batch.
           </span>
         ) : status === "error" ? (
           <span className="batch-result batch-result--error">

@@ -574,6 +574,41 @@
   color: var(--risk);
 }
 
+.batch-result--warning {
+  color: var(--escalate);
+  font-weight: 500;
+}
+
+.batch-button--secondary {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.batch-button--secondary:hover:not(:disabled) {
+  background: var(--accent-tint);
+}
+
+.spinner--dark {
+  border: 2px solid var(--accent-tint-strong);
+  border-top-color: var(--accent);
+}
+
+.actions-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (min-width: 760px) {
+  .actions-stack {
+    flex-direction: row;
+  }
+  .actions-stack > * {
+    flex: 1;
+  }
+}
+
 .batch-button {
   background: var(--accent);
   color: #fff;
