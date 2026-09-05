@@ -142,10 +142,9 @@ def _call_gemini(prompt: str) -> Optional[dict]:
         data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         return json.loads(text)
-    except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError, ValueError, TypeError):
-        # Network failure (incl. timeout — httpx.TimeoutException subclasses
-        # httpx.HTTPError), bad HTTP status, unexpected response shape, or
-        # invalid/non-JSON text — all treated identically: fall back safely.
+
+    except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        print(f"Gemini API error: {type(exc).__name__}: {exc}")
         return None
     except Exception:
         # Defense in depth: no matter what goes wrong talking to an external
